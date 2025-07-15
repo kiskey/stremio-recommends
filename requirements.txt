@@ -1,5 +1,12 @@
-Flask==2.2.3
-gunicorn==20.1.0
+# requirements.txt
+
+# Pinning core ML and Data libraries to prevent binary incompatibility.
+# These versions are known to work well together.
+numpy==1.24.4
 pandas==1.5.3
 scikit-learn==1.2.2
 SQLAlchemy==2.0.7
+
+# Application server
+Flask==2.2.3
+gunicorn==20.1.0
