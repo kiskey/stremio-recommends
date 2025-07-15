@@ -10,6 +10,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # --- CONFIGURATION ---
 MINIMUM_VOTES_THRESHOLD = 500
+YEAR_FILTER_THRESHOLD = 1980  # <-- NEW: All content will be from this year or newer
 BASICS_URL = "https://datasets.imdbws.com/title.basics.tsv.gz"
 AKAS_URL = "https://datasets.imdbws.com/title.akas.tsv.gz"
 RATINGS_URL = "https://datasets.imdbws.com/title.ratings.tsv.gz"
@@ -22,14 +23,14 @@ def build_artifacts():
     start_time = time.time()
     print("--- Starting Full Artifact Build ---")
 
-    # Create artifacts directory if it doesn't exist
     os.makedirs(ARTIFACTS_DIR, exist_ok=True)
     print(f"Artifacts will be saved in '{ARTIFACTS_DIR}/'")
 
     # --- EXTRACT ---
     print("Step 1/5: Downloading and reading datasets...")
+    # We now need the 'startYear' column
     basics_df = pd.read_csv(BASICS_URL, sep='\t', low_memory=False, compression='gzip',
-                            usecols=['tconst', 'titleType', 'primaryTitle', 'genres'])
+                            usecols=['tconst', 'titleType', 'primaryTitle', 'genres', 'startYear'])
     akas_df = pd.read_csv(AKAS_URL, sep='\t', low_memory=False, compression='gzip',
                           usecols=['titleId', 'region'])
     ratings_df = pd.read_csv(RATINGS_URL, sep='\t', low_memory=False, compression='gzip')
@@ -37,6 +38,19 @@ def build_artifacts():
 
     # --- TRANSFORM ---
     print("Step 2/5: Transforming and enriching data...")
+
+    # --- NEW FILTERING STEP ---
+    print(f"Applying year filter (>= {YEAR_FILTER_THRESHOLD})...")
+    # Convert 'startYear' to a numeric type. Errors (like '\N') become NaN.
+    basics_df['startYear'] = pd.to_numeric(basics_df['startYear'], errors='coerce')
+    # Drop rows where year is NaN or before our threshold
+    basics_df.dropna(subset=['startYear'], inplace=True)
+    basics_df = basics_df[basics_df['startYear'] >= YEAR_FILTER_THRESHOLD].copy()
+    # Convert the year to integer for cleaner data
+    basics_df['startYear'] = basics_df['startYear'].astype(int)
+    print(f"Filtered down to {len(basics_df)} titles released since {YEAR_FILTER_THRESHOLD}.")
+    # --- END NEW STEP ---
+
     titles_df = basics_df[basics_df['titleType'].isin(['movie', 'tvSeries'])].copy()
     
     indian_akas = akas_df[akas_df['region'] == 'IN']
@@ -64,12 +78,10 @@ def build_artifacts():
     print("Step 4/5: Saving computed artifacts to disk...")
     qualified_df.reset_index(drop=True, inplace=True)
     
-    # Save ML artifacts
     with open(os.path.join(ARTIFACTS_DIR, 'cosine_sim.pkl'), 'wb') as f:
         pickle.dump(cosine_sim, f)
     qualified_df.to_pickle(os.path.join(ARTIFACTS_DIR, 'enriched_titles.pkl'))
     
-    # Save SQLite DB
     db_df = qualified_df[['tconst', 'primaryTitle', 'titleType', 'is_indian']].rename(columns={'tconst': 'id', 'primaryTitle': 'name', 'titleType': 'type'})
     engine = create_engine(f'sqlite:///{os.path.join(ARTIFACTS_DIR, "addon_data.db")}')
     db_df.to_sql('titles', con=engine, if_exists='replace', index=False)
