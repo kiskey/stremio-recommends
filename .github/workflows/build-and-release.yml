@@ -3,9 +3,7 @@
 name: Build Data, Create Release, and Push Docker Image
 
 on:
-  # Allows manual triggering from the Actions tab
   workflow_dispatch:
-  # Schedules the workflow to run at 03:00 UTC every 3 days
   schedule:
     - cron: '0 3 */3 * *'
 
@@ -23,7 +21,7 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install Python dependencies
+      - name: Upgrade pip and install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
