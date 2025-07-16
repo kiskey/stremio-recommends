@@ -5,21 +5,27 @@ FROM python:3.9-slim-bookworm
 
 WORKDIR /usr/src/app
 
-# Copy and install dependencies first to leverage Docker layer caching
+# Copy and install dependencies first
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# --- NEW STEP: Copy the data artifacts into the image ---
-# This assumes the 'artifacts' directory exists in the build context
+# Copy the data artifacts into the image
 COPY artifacts ./artifacts
 
 # Copy the application code
 COPY main.py .
 
-# Set environment variable for the artifacts directory inside the container
-ENV ARTIFACTS_DIR=/usr/src/app/artifacts
+# --- NEW ENTRYPOINT LOGIC ---
+# Copy the entrypoint script into the container
+COPY entrypoint.sh .
+# Make the script executable
+RUN chmod +x ./entrypoint.sh
 
+ENV ARTIFACTS_DIR=/usr/src/app/artifacts
 EXPOSE 5000
 
-# The CMD remains the same
+# Set the entrypoint script to run on container start
+ENTRYPOINT ["./entrypoint.sh"]
+
+# The CMD is now passed as an argument to the entrypoint script
 CMD ["gunicorn", "--bind", "0.0.0.0:5000", "main:create_app()"]
