@@ -10,7 +10,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # --- Configuration ---
 RECOMMENDATIONS_LIMIT = 50
-HISTORY_SEED_COUNT = 5
+HISTORY_SEED_COUNT = 5 # Use the 5 most recent items *of a specific type*
 ARTIFACTS_DIR = os.environ.get('ARTIFACTS_DIR', 'artifacts')
 HISTORY_DB_PATH = os.path.join(ARTIFACTS_DIR, 'watch_history.db')
 
@@ -22,35 +22,25 @@ tfidf_matrix = None
 all_titles = None
 indices = None
 
-# --- Addon Manifest (UPDATED FOR TWO CATALOGS) ---
+# --- Addon Manifest ---
 MANIFEST = {
     "id": "community.dynamic.recommendations",
-    "version": "2.0.0", # Major version bump for new features
+    "version": "2.0.1", # Patch version bump for bugfix
     "name": "For You Recommendations",
     "description": "Provides separate, personalized catalogs for movies and series based on your viewing history.",
     "types": ["movie", "series"],
     "resources": ["catalog", "meta"],
     "catalogs": [
-        {
-            "type": "movie",
-            "id": "recs_movies",
-            "name": "Recommended Movies"
-        },
-        {
-            "type": "series",
-            "id": "recs_series",
-            "name": "Recommended Series"
-        }
+        { "type": "movie", "id": "recs_movies", "name": "Recommended Movies" },
+        { "type": "series", "id": "recs_series", "name": "Recommended Series" }
     ]
 }
 
 # --- Route Definitions ---
-
 @main_bp.route('/manifest.json')
 def manifest():
     return jsonify(MANIFEST)
 
-# Meta loggers remain the same
 @main_bp.route('/meta/movie/<imdb_id>.json')
 def meta_movie_logger(imdb_id):
     log_to_history(imdb_id, 'movie')
@@ -61,33 +51,32 @@ def meta_series_logger(imdb_id):
     log_to_history(imdb_id, 'series')
     return jsonify({"meta": {}})
 
-# --- NEW SEPARATE CATALOG ROUTES ---
-
+# --- Separate Catalog Routes ---
 @main_bp.route('/catalog/movie/recs_movies.json')
 def get_movie_recommendations():
-    """Endpoint for the 'Recommended Movies' catalog."""
     return generate_sorted_recommendations(media_type='movie')
 
 @main_bp.route('/catalog/series/recs_series.json')
 def get_series_recommendations():
-    """Endpoint for the 'Recommended Series' catalog."""
     return generate_sorted_recommendations(media_type='series')
 
 # --- CORE LOGIC HELPER FUNCTION ---
-
 def generate_sorted_recommendations(media_type: str):
-    """
-    Generates a pool of recommendations, then filters and sorts them
-    based on the specified media type and user requirements.
-    """
-    # 1. Generate a common pool of candidates from history
     conn = sqlite3.connect(HISTORY_DB_PATH)
-    history_df = pd.read_sql_query(f"SELECT imdb_id FROM history ORDER BY timestamp DESC LIMIT {HISTORY_SEED_COUNT}", conn)
+    
+    # --- THIS IS THE FIX ---
+    # The SQL query now includes a WHERE clause to fetch history
+    # specific to the media type of the catalog being requested.
+    # We use parameterized queries to prevent SQL injection.
+    query = f"SELECT imdb_id FROM history WHERE type = ? ORDER BY timestamp DESC LIMIT ?"
+    history_df = pd.read_sql_query(query, conn, params=(media_type, HISTORY_SEED_COUNT))
     
     if history_df.empty:
+        print(f"No watch history found for type '{media_type}'. Returning empty catalog.")
         conn.close()
         return jsonify({"metas": []})
 
+    # The rest of the function now operates on a correctly seeded pool
     candidate_scores = {}
     full_history_ids = set(pd.read_sql_query("SELECT imdb_id FROM history", conn)['imdb_id'])
     conn.close()
@@ -96,7 +85,7 @@ def generate_sorted_recommendations(media_type: str):
         if imdb_id in indices:
             idx = indices[imdb_id]
             sim_scores = cosine_similarity(tfidf_matrix[idx], tfidf_matrix).flatten()
-            related_indices = sim_scores.argsort()[-31:-1][::-1] # Get a slightly larger pool (top 30)
+            related_indices = sim_scores.argsort()[-31:-1][::-1]
             for rel_idx in related_indices:
                 if rel_idx not in candidate_scores:
                     candidate_scores[rel_idx] = sim_scores[rel_idx]
@@ -105,41 +94,26 @@ def generate_sorted_recommendations(media_type: str):
     candidate_details = all_titles.iloc[candidate_indices].copy()
     candidate_details['score'] = candidate_details.index.map(candidate_scores)
 
-    # 2. Filter out already watched items
     filtered_candidates = candidate_details[~candidate_details['tconst'].isin(full_history_ids)]
-
-    # 3. Filter for the specific media type (movie or series)
     typed_candidates = filtered_candidates[filtered_candidates['titleType'] == media_type]
 
-    # 4. Separate by region
     indian_recs = typed_candidates[typed_candidates['is_indian'] == True]
     international_recs = typed_candidates[typed_candidates['is_indian'] == False]
     
-    # 5. Sort each regional group by relevance (score) and rating
     sorted_indian = indian_recs.sort_values(by=['score', 'averageRating'], ascending=False)
     sorted_international = international_recs.sort_values(by=['score', 'averageRating'], ascending=False)
 
-    # 6. Combine (Indian first) and limit to 50
     final_recs_df = pd.concat([sorted_indian, sorted_international]).head(RECOMMENDATIONS_LIMIT)
 
-    # 7. Format for Stremio response
     metas = []
     for _, row in final_recs_df.iterrows():
         poster_url = f"https://images.metahub.space/poster/medium/{row['tconst']}/img"
-        metas.append({
-            "id": row['tconst'],
-            "type": row['titleType'],
-            "name": row['primaryTitle'],
-            "poster": poster_url,
-            "posterShape": "poster"
-        })
+        metas.append({ "id": row['tconst'], "type": row['titleType'], "name": row['primaryTitle'], "poster": poster_url, "posterShape": "poster" })
 
     return jsonify({"metas": metas})
 
 # --- Helper functions and Application Factory (unchanged) ---
-
 def log_to_history(imdb_id, media_type):
-    # ... (implementation is identical to previous version)
     try:
         conn = sqlite3.connect(HISTORY_DB_PATH)
         cursor = conn.cursor()
@@ -150,7 +124,6 @@ def log_to_history(imdb_id, media_type):
         print(f"Error logging to history DB: {e}")
 
 def create_app():
-    # ... (implementation is identical to previous version)
     app = Flask(__name__)
     global tfidf_matrix, all_titles, indices
     
