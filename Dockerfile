@@ -1,23 +1,20 @@
 # Dockerfile
 
-# Use a modern, supported base image: Debian 12 "Bookworm"
+# Use a modern, supported base image
 FROM python:3.9-slim-bookworm
 
-# Set working directory in the container
 WORKDIR /usr/src/app
 
-# Copy and install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application code
 COPY main.py .
 
-# Set environment variable for the artifacts directory inside the container
 ENV ARTIFACTS_DIR=/usr/src/app/artifacts
 
-# Expose the port the app runs on
 EXPOSE 5000
 
-# Run the app using a production-grade WSGI server
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "main:app"]
+# --- UPDATED CMD INSTRUCTION ---
+# This tells Gunicorn to look inside the 'main' module for a function
+# named 'create_app' and to call it to get the Flask app object.
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "main:create_app()"]
