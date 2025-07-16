@@ -15,52 +15,72 @@ ARTIFACTS_DIR = os.environ.get('ARTIFACTS_DIR', 'artifacts')
 HISTORY_DB_PATH = os.path.join(ARTIFACTS_DIR, 'watch_history.db')
 
 # --- Create a Blueprint ---
-# A Blueprint organizes a group of related routes. This is a Flask best practice.
 main_bp = Blueprint('main', __name__)
 
-# --- Global variables for loaded data (loaded once by the factory) ---
+# --- Global variables for loaded data ---
 tfidf_matrix = None
 all_titles = None
 indices = None
 
-# --- Addon Manifest ---
+# --- Addon Manifest (UPDATED FOR TWO CATALOGS) ---
 MANIFEST = {
     "id": "community.dynamic.recommendations",
-    "version": "1.3.0", # Version bump for new feature
+    "version": "2.0.0", # Major version bump for new features
     "name": "For You Recommendations",
-    "description": "A dynamic catalog of recommendations based on your viewing history.",
+    "description": "Provides separate, personalized catalogs for movies and series based on your viewing history.",
     "types": ["movie", "series"],
     "resources": ["catalog", "meta"],
-    "catalogs": [{
-        "type": "movie",
-        "id": "for_you_recs",
-        "name": "For You"
-    }]
+    "catalogs": [
+        {
+            "type": "movie",
+            "id": "recs_movies",
+            "name": "Recommended Movies"
+        },
+        {
+            "type": "series",
+            "id": "recs_series",
+            "name": "Recommended Series"
+        }
+    ]
 }
 
-# --- Route Definitions (Attached to the Blueprint) ---
+# --- Route Definitions ---
 
 @main_bp.route('/manifest.json')
 def manifest():
-    """Provides the addon's manifest to Stremio."""
     return jsonify(MANIFEST)
 
+# Meta loggers remain the same
 @main_bp.route('/meta/movie/<imdb_id>.json')
 def meta_movie_logger(imdb_id):
-    """Acts as a listener to log movie viewing history."""
     log_to_history(imdb_id, 'movie')
-    return jsonify({"meta": {}}) # Return empty meta; we are just logging
+    return jsonify({"meta": {}})
 
 @main_bp.route('/meta/series/<imdb_id>.json')
 def meta_series_logger(imdb_id):
-    """Acts as a listener to log series viewing history."""
     log_to_history(imdb_id, 'series')
-    return jsonify({"meta": {}}) # Return empty meta; we are just logging
+    return jsonify({"meta": {}})
 
-@main_bp.route('/catalog/movie/for_you_recs.json')
-@main_bp.route('/catalog/series/for_you_recs.json')
-def get_recommendations_catalog():
-    """The core logic for generating and serving recommendations."""
+# --- NEW SEPARATE CATALOG ROUTES ---
+
+@main_bp.route('/catalog/movie/recs_movies.json')
+def get_movie_recommendations():
+    """Endpoint for the 'Recommended Movies' catalog."""
+    return generate_sorted_recommendations(media_type='movie')
+
+@main_bp.route('/catalog/series/recs_series.json')
+def get_series_recommendations():
+    """Endpoint for the 'Recommended Series' catalog."""
+    return generate_sorted_recommendations(media_type='series')
+
+# --- CORE LOGIC HELPER FUNCTION ---
+
+def generate_sorted_recommendations(media_type: str):
+    """
+    Generates a pool of recommendations, then filters and sorts them
+    based on the specified media type and user requirements.
+    """
+    # 1. Generate a common pool of candidates from history
     conn = sqlite3.connect(HISTORY_DB_PATH)
     history_df = pd.read_sql_query(f"SELECT imdb_id FROM history ORDER BY timestamp DESC LIMIT {HISTORY_SEED_COUNT}", conn)
     
@@ -75,9 +95,8 @@ def get_recommendations_catalog():
     for imdb_id in history_df['imdb_id']:
         if imdb_id in indices:
             idx = indices[imdb_id]
-            # Perform fast, on-demand similarity calculation
             sim_scores = cosine_similarity(tfidf_matrix[idx], tfidf_matrix).flatten()
-            related_indices = sim_scores.argsort()[-21:-1][::-1]
+            related_indices = sim_scores.argsort()[-31:-1][::-1] # Get a slightly larger pool (top 30)
             for rel_idx in related_indices:
                 if rel_idx not in candidate_scores:
                     candidate_scores[rel_idx] = sim_scores[rel_idx]
@@ -86,21 +105,27 @@ def get_recommendations_catalog():
     candidate_details = all_titles.iloc[candidate_indices].copy()
     candidate_details['score'] = candidate_details.index.map(candidate_scores)
 
+    # 2. Filter out already watched items
     filtered_candidates = candidate_details[~candidate_details['tconst'].isin(full_history_ids)]
 
-    indian_recs = filtered_candidates[filtered_candidates['is_indian'] == True]
-    international_recs = filtered_candidates[filtered_candidates['is_indian'] == False]
+    # 3. Filter for the specific media type (movie or series)
+    typed_candidates = filtered_candidates[filtered_candidates['titleType'] == media_type]
+
+    # 4. Separate by region
+    indian_recs = typed_candidates[typed_candidates['is_indian'] == True]
+    international_recs = typed_candidates[typed_candidates['is_indian'] == False]
     
+    # 5. Sort each regional group by relevance (score) and rating
     sorted_indian = indian_recs.sort_values(by=['score', 'averageRating'], ascending=False)
     sorted_international = international_recs.sort_values(by=['score', 'averageRating'], ascending=False)
 
+    # 6. Combine (Indian first) and limit to 50
     final_recs_df = pd.concat([sorted_indian, sorted_international]).head(RECOMMENDATIONS_LIMIT)
 
+    # 7. Format for Stremio response
     metas = []
     for _, row in final_recs_df.iterrows():
-        # --- ENHANCEMENT: Construct the predictable Cinemeta poster URL directly ---
         poster_url = f"https://images.metahub.space/poster/medium/{row['tconst']}/img"
-
         metas.append({
             "id": row['tconst'],
             "type": row['titleType'],
@@ -111,10 +136,10 @@ def get_recommendations_catalog():
 
     return jsonify({"metas": metas})
 
-# --- Helper functions ---
+# --- Helper functions and Application Factory (unchanged) ---
 
 def log_to_history(imdb_id, media_type):
-    """Writes a viewed item to the persistent history database."""
+    # ... (implementation is identical to previous version)
     try:
         conn = sqlite3.connect(HISTORY_DB_PATH)
         cursor = conn.cursor()
@@ -124,13 +149,9 @@ def log_to_history(imdb_id, media_type):
     except Exception as e:
         print(f"Error logging to history DB: {e}")
 
-# --- Application Factory Function ---
-
 def create_app():
-    """Creates and configures the Flask application."""
+    # ... (implementation is identical to previous version)
     app = Flask(__name__)
-    
-    # Use 'global' to modify the variables defined outside this function's scope
     global tfidf_matrix, all_titles, indices
     
     print(f"Loading data artifacts from: {ARTIFACTS_DIR}")
@@ -142,9 +163,8 @@ def create_app():
         print("Data artifacts loaded successfully.")
     except FileNotFoundError:
         print(f"FATAL ERROR: Data artifacts not found in '{ARTIFACTS_DIR}'. Cannot start app.")
-        exit(1) # Exit with an error code
-
-    # Initialize the history database on first run
+        exit(1)
+    
     try:
         conn = sqlite3.connect(HISTORY_DB_PATH)
         cursor = conn.cursor()
@@ -155,7 +175,5 @@ def create_app():
         print(f"FATAL ERROR: Could not initialize history database at {HISTORY_DB_PATH}: {e}")
         exit(1)
     
-    # Register the blueprint to connect all the routes to the app
     app.register_blueprint(main_bp)
-    
     return app
