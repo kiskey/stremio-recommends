@@ -7,43 +7,31 @@ This addon is designed to be fully automated, using GitHub Actions to build fres
 ## Key Features
 
 -   **Truly Personalized Recommendations:** Learns from the movies and series you watch to suggest similar content.
--   **Separate, Organized Catalogs:** Provides two distinct catalogs on your Stremio home screen: "Recommended Movies" and "Recommended Series."
--   **Intelligent Seeding:** The movie catalog is seeded from your movie history, and the series catalog is seeded from your series history, ensuring relevant suggestions.
--   **Smart Sorting:** Recommendations are sorted first by region (Indian content prioritized), then by relevance score and average rating.
--   **Concept-Based Matching:** The machine learning model goes beyond simple keywords. It understands and prioritizes **genres, directors, and top actors**, leading to high-quality, thematic recommendations.
--   **Full Poster Support:** Catalog views are fully populated with posters for a rich user experience, without slowing down the addon.
--   **Fully Automated & Self-Contained:** A GitHub Actions workflow automatically rebuilds the data and the Docker image every 3 days, ensuring your recommendations stay fresh. The final Docker image includes all necessary data.
--   **Lightweight & Performant:** Designed to run efficiently in a low-resource environment (like a small VPS or Raspberry Pi) using a "split brain" architecture.
-
-## How It Works (Architecture)
-
-This project uses a modern architecture that separates the heavy data processing from the lightweight live application.
-
-#### 1. Offline Build Pipeline (GitHub Actions)
-
--   **Trigger:** Runs on a schedule (every 3 days) or can be triggered manually.
--   **Data Fetching:** Downloads the latest datasets from IMDb (titles, ratings, names, etc.).
--   **Filtering & Enrichment:** Processes millions of records to create a clean, modern (post-1980) dataset with only qualified titles (minimum vote count). It enriches this data with director and actor information.
--   **ML Model Training:** Builds a "metadata soup" for each title, heavily weighting genres and creators. It then computes a TF-IDF sparse matrix from this data, which represents the "knowledge" of how titles relate to each other.
--   **Bundling:** The script creates a set of data artifacts (`enriched_titles.pkl`, `tfidf_matrix.pkl`, etc.).
--   **Docker Build:** A lean Docker image is built, copying the application code and the ~15MB of data artifacts directly into the image.
--   **Push to Registry:** The final, self-contained image is pushed to the GitHub Container Registry.
-
-#### 2. Online Addon Server (Your Deployed Docker Container)
-
--   **Startup:** On startup, a pre-flight script verifies that all data artifacts are present before starting the web server. The Flask application loads the data artifacts into memory once.
--   **History Logging:** The addon listens silently as you browse Stremio, logging the IMDb IDs of movies and series you click on to a persistent `watch_history.db` file.
--   **On-Demand Recommendations:** When you open a "Recommended" catalog, the app:
-    1.  Loads your recent viewing history for that specific media type (e.g., only movies).
-    2.  Performs a series of lightning-fast `cosine_similarity` calculations between your history and the entire knowledge base.
-    3.  Generates a pool of recommendations, filters, sorts them by region and rating, and serves the final list to Stremio.
+-   **Separate, Organized Catalogs:** Provides two distinct catalogs: "Recommended Movies" and "Recommended Series."
+-   **Intelligent Seeding:** Each catalog is seeded from its own specific media type history.
+-   **Configurable Region Sorting:** Recommendations are sorted by a user-defined priority list of regions (e.g., Indian first, then US, then UK), followed by all other international content.
+-   **Pagination Support:** Both catalogs are fully paginated to handle large recommendation lists.
+-   **Configurable Page Size:** The number of items per page can be easily configured.
+-   **Concept-Based Matching:** The machine learning model prioritizes **genres, directors, and top actors** over simple title keywords.
+-   **Fully Automated & Self-Contained:** A GitHub Actions workflow automatically rebuilds the data and the Docker image every 3 days.
 
 ## Technology Stack
+- **Backend:** Python 3.9, Flask, Gunicorn
+- **Data Processing & ML:** Pandas, Scikit-learn, NumPy
+- **CI/CD & Deployment:** Docker, Docker Compose, GitHub Actions
+- **Data Source:** IMDb Datasets
 
--   **Backend:** Python 3.9, Flask, Gunicorn
--   **Data Processing & ML:** Pandas, Scikit-learn, NumPy
--   **CI/CD & Deployment:** Docker, Docker Compose, GitHub Actions
--   **Data Source:** IMDb Datasets
+## Configuration (Environment Variables)
+
+You can customize the addon's behavior by setting environment variables in your `docker-compose.yml` file.
+
+-   **`PRIORITY_REGIONS`**: A comma-separated, ordered list of [ISO 3166-1 alpha-2 country codes](https://en.wikipedia.org/wiki/List_of_ISO_3166_country_codes) to prioritize in recommendations. This same variable should be set in the GitHub Actions workflow file to ensure data is built correctly.
+    -   *Example*: `IN,US,UK` will show Indian content first, then US content, then UK content, followed by all other international content.
+    -   *Default*: `IN`
+
+-   **`PAGE_SIZE`**: The number of items to show per catalog page. This also controls the `skip` interval for pagination.
+    -   *Example*: `30`
+    -   *Default*: `50`
 
 ## Deployment Guide
 
