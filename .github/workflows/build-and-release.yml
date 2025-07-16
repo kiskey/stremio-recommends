@@ -51,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     # This job doesn't need write permissions, so we don't add them here.
     permissions:
-      contents: write
+      packages: write
     
     steps:
       - name: Checkout repository
