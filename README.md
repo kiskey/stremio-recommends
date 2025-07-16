@@ -32,6 +32,10 @@ You can customize the addon's behavior by setting environment variables in your 
 -   **`PAGE_SIZE`**: The number of items to show per catalog page. This also controls the `skip` interval for pagination.
     -   *Example*: `30`
     -   *Default*: `50`
+ 
+-   **`TOTAL_LIMIT`**: The maximum total number of recommendations to show in each catalog.
+    -   *Example*: `75`
+    -   *Default*: `50`
 
 ## Deployment Guide
 
