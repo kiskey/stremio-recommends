@@ -10,6 +10,7 @@ on:
 jobs:
   build-and-release-artifacts:
     name: Build and Release Data Artifacts
+    # Runs on the standard, free runner
     runs-on: ubuntu-latest
 
     steps:
