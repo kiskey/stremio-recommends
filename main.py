@@ -12,55 +12,82 @@ from sklearn.metrics.pairwise import cosine_similarity
 PAGE_SIZE = int(os.environ.get('PAGE_SIZE', 50))
 PRIORITY_REGIONS = os.environ.get('PRIORITY_REGIONS', 'IN').split(',')
 HISTORY_SEED_COUNT = 5
+TOTAL_LIMIT = int(os.environ.get('TOTAL_LIMIT', 50))
 ARTIFACTS_DIR = os.environ.get('ARTIFACTS_DIR', 'artifacts')
 HISTORY_DB_PATH = os.path.join(ARTIFACTS_DIR, 'watch_history.db')
 
-# --- Blueprint and Globals ---
+# --- Create a Blueprint ---
 main_bp = Blueprint('main', __name__)
-tfidf_matrix, all_titles, indices = None, None, None
+
+# --- Global variables for loaded data ---
+tfidf_matrix = None
+all_titles = None
+indices = None
 
 # --- Addon Manifest (with Pagination) ---
 MANIFEST = {
     "id": "community.dynamic.recommendations",
-    "version": "3.0.0",
+    "version": "3.1.0", # Version reflects new configurable features
     "name": "For You Recommendations",
     "description": "Provides configurable, paginated, and region-sorted recommendations.",
     "types": ["movie", "series"],
     "resources": ["catalog", "meta"],
     "catalogs": [
-        {"type": "movie", "id": "recs_movies", "name": "Recommended Movies", "extra": [{"name": "skip", "isRequired": false}]},
-        {"type": "series", "id": "recs_series", "name": "Recommended Series", "extra": [{"name": "skip", "isRequired": false}]}
+        {
+            "type": "movie",
+            "id": "recs_movies",
+            "name": "Recommended Movies",
+            "extra": [{"name": "skip", "isRequired": false}]
+        },
+        {
+            "type": "series",
+            "id": "recs_series",
+            "name": "Recommended Series",
+            "extra": [{"name": "skip", "isRequired": false}]
+        }
     ]
 }
 
 # --- Route Definitions ---
+
 @main_bp.route('/manifest.json')
 def manifest():
+    """Provides the addon's manifest to Stremio."""
     return jsonify(MANIFEST)
 
 @main_bp.route('/meta/movie/<imdb_id>.json')
 def meta_movie_logger(imdb_id):
+    """Logs history and then "redirects" to other meta addons by returning a 404."""
     log_to_history(imdb_id, 'movie')
     return jsonify({"err": "not found"}), 404
 
 @main_bp.route('/meta/series/<imdb_id>.json')
 def meta_series_logger(imdb_id):
+    """Logs history and then "redirects" to other meta addons by returning a 404."""
     log_to_history(imdb_id, 'series')
     return jsonify({"err": "not found"}), 404
 
 # --- Catalog Routes with Pagination ---
+
 @main_bp.route('/catalog/movie/recs_movies.json')
 @main_bp.route('/catalog/movie/recs_movies/skip=<int:skip>.json')
 def get_movie_recommendations(skip: int = 0):
+    """Endpoint for the 'Recommended Movies' catalog with pagination."""
     return generate_sorted_recommendations(media_type='movie', skip=skip)
 
 @main_bp.route('/catalog/series/recs_series.json')
 @main_bp.route('/catalog/series/recs_series/skip=<int:skip>.json')
 def get_series_recommendations(skip: int = 0):
+    """Endpoint for the 'Recommended Series' catalog with pagination."""
     return generate_sorted_recommendations(media_type='series', skip=skip)
 
 # --- CORE LOGIC HELPER FUNCTION ---
+
 def generate_sorted_recommendations(media_type: str, skip: int = 0):
+    """
+    Generates a pool of recommendations, then filters and sorts them
+    based on the specified media type, region priority, and pagination.
+    """
     conn = sqlite3.connect(HISTORY_DB_PATH)
     query = "SELECT imdb_id FROM history WHERE type = ? ORDER BY timestamp DESC LIMIT ?"
     history_df = pd.read_sql_query(query, conn, params=(media_type, HISTORY_SEED_COUNT))
@@ -69,7 +96,8 @@ def generate_sorted_recommendations(media_type: str, skip: int = 0):
         conn.close()
         return jsonify({"metas": []})
 
-    candidate_scores, full_history_ids = {}, set(pd.read_sql_query("SELECT imdb_id FROM history", conn)['imdb_id'])
+    candidate_scores = {}
+    full_history_ids = set(pd.read_sql_query("SELECT imdb_id FROM history", conn)['imdb_id'])
     conn.close()
 
     for imdb_id in history_df['imdb_id']:
@@ -83,11 +111,13 @@ def generate_sorted_recommendations(media_type: str, skip: int = 0):
     
     candidate_details = all_titles.iloc[list(candidate_scores.keys())].copy()
     candidate_details['score'] = candidate_details.index.map(candidate_scores)
+
     filtered_candidates = candidate_details[~candidate_details['tconst'].isin(full_history_ids)]
     
     data_source_type = 'tvSeries' if media_type == 'series' else 'movie'
     typed_candidates = filtered_candidates[filtered_candidates['titleType'] == data_source_type]
 
+    # Region-based sorting logic
     sorted_groups, processed_regions = [], set()
     for region in PRIORITY_REGIONS:
         region_recs = typed_candidates[typed_candidates['primary_region'] == region]
@@ -96,21 +126,36 @@ def generate_sorted_recommendations(media_type: str, skip: int = 0):
     other_recs = typed_candidates[~typed_candidates['primary_region'].isin(processed_regions)]
     sorted_groups.append(other_recs.sort_values(by=['score', 'averageRating'], ascending=False))
 
-    if not sorted_groups: return jsonify({"metas": []})
+    if not sorted_groups:
+        return jsonify({"metas": []})
+        
     full_sorted_df = pd.concat(sorted_groups)
-    paginated_df = full_sorted_df.iloc[skip : skip + PAGE_SIZE]
 
+    # Apply total limit first, then pagination
+    total_limited_df = full_sorted_df.head(TOTAL_LIMIT)
+    paginated_df = total_limited_df.iloc[skip : skip + PAGE_SIZE]
+
+    # Format for Stremio response
     metas = []
     for _, row in paginated_df.iterrows():
         poster_url = f"https://images.metahub.space/poster/medium/{row['tconst']}/img"
         output_type = 'series' if row['titleType'] == 'tvSeries' else 'movie'
-        metas.append({"id": row['tconst'], "type": output_type, "name": row['primaryTitle'], "poster": poster_url, "posterShape": "poster"})
+        metas.append({
+            "id": row['tconst'],
+            "type": output_type,
+            "name": row['primaryTitle'],
+            "poster": poster_url,
+            "posterShape": "poster"
+        })
 
     return jsonify({"metas": metas})
 
-# --- Helper functions and Application Factory ---
+# --- Helper functions ---
+
 def log_to_history(imdb_id, media_type):
+    """Writes a viewed item to the persistent history database."""
     try:
+        # Ensure the directory for the history DB exists, as Docker might not create it for a file mount
         os.makedirs(os.path.dirname(HISTORY_DB_PATH), exist_ok=True)
         conn = sqlite3.connect(HISTORY_DB_PATH)
         cursor = conn.cursor()
@@ -118,13 +163,18 @@ def log_to_history(imdb_id, media_type):
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"Error logging to history DB: {e}")
+        print(f"Error logging to history DB at {HISTORY_DB_PATH}: {e}")
+
+# --- Application Factory Function ---
 
 def create_app():
+    """Creates and configures the Flask application."""
     app = Flask(__name__)
+    
     global tfidf_matrix, all_titles, indices
     
     # Pre-flight checks for critical files
+    print(f"Checking for bundled artifacts in: {ARTIFACTS_DIR}")
     required_files = [os.path.join(ARTIFACTS_DIR, f) for f in ['enriched_titles.pkl', 'tfidf_vectorizer.pkl', 'tfidf_matrix.pkl']]
     for f in required_files:
         if not os.path.exists(f):
@@ -152,5 +202,7 @@ def create_app():
     except Exception as e:
         print(f"FATAL ERROR: Could not initialize history database: {e}"); exit(1)
     
+    # Register the blueprint to connect all the routes to the app
     app.register_blueprint(main_bp)
+    
     return app
