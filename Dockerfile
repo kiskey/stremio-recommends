@@ -1,5 +1,7 @@
-# Use a lean official Python image
-FROM python:3.9-slim-buster
+# Dockerfile
+
+# Use a modern, supported base image: Debian 12 "Bookworm"
+FROM python:3.9-slim-bookworm
 
 # Set working directory in the container
 WORKDIR /usr/src/app
