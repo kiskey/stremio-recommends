@@ -50,6 +50,8 @@ jobs:
     name: Build and Push Lean Docker Image
     runs-on: ubuntu-latest
     # This job doesn't need write permissions, so we don't add them here.
+    permissions:
+      contents: write
     
     steps:
       - name: Checkout repository
