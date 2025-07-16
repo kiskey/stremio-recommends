@@ -10,53 +10,49 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # --- CONFIGURATION ---
 MINIMUM_VOTES_THRESHOLD = 500
-YEAR_FILTER_THRESHOLD = 1980  # <-- NEW: All content will be from this year or newer
+YEAR_FILTER_THRESHOLD = 1980
+CHUNK_SIZE = 100000  # Process 100,000 rows at a time
 BASICS_URL = "https://datasets.imdbws.com/title.basics.tsv.gz"
 AKAS_URL = "https://datasets.imdbws.com/title.akas.tsv.gz"
 RATINGS_URL = "https://datasets.imdbws.com/title.ratings.tsv.gz"
 ARTIFACTS_DIR = "artifacts"
 
 def build_artifacts():
-    """
-    Performs a full build of the database and ML models from the latest IMDb data.
-    """
     start_time = time.time()
-    print("--- Starting Full Artifact Build ---")
-
+    print("--- Starting Full Artifact Build (Memory-Optimized) ---")
     os.makedirs(ARTIFACTS_DIR, exist_ok=True)
-    print(f"Artifacts will be saved in '{ARTIFACTS_DIR}/'")
 
-    # --- EXTRACT ---
-    print("Step 1/5: Downloading and reading datasets...")
-    # We now need the 'startYear' column
-    basics_df = pd.read_csv(BASICS_URL, sep='\t', low_memory=False, compression='gzip',
-                            usecols=['tconst', 'titleType', 'primaryTitle', 'genres', 'startYear'])
-    akas_df = pd.read_csv(AKAS_URL, sep='\t', low_memory=False, compression='gzip',
-                          usecols=['titleId', 'region'])
-    ratings_df = pd.read_csv(RATINGS_URL, sep='\t', low_memory=False, compression='gzip')
-    print("Datasets loaded.")
+    # --- Step 1: Get all Indian Title IDs by chunking the large AKAs file ---
+    print("Step 1/6: Identifying all Indian titles...")
+    indian_ids = set()
+    with pd.read_csv(AKAS_URL, sep='\t', usecols=['titleId', 'region'], chunksize=CHUNK_SIZE, compression='gzip') as reader:
+        for chunk in reader:
+            indian_chunk = chunk[chunk['region'] == 'IN']
+            indian_ids.update(indian_chunk['titleId'])
+    print(f"Found {len(indian_ids)} unique titles associated with India.")
 
-    # --- TRANSFORM ---
-    print("Step 2/5: Transforming and enriching data...")
-
-    # --- NEW FILTERING STEP ---
-    print(f"Applying year filter (>= {YEAR_FILTER_THRESHOLD})...")
-    # Convert 'startYear' to a numeric type. Errors (like '\N') become NaN.
-    basics_df['startYear'] = pd.to_numeric(basics_df['startYear'], errors='coerce')
-    # Drop rows where year is NaN or before our threshold
-    basics_df.dropna(subset=['startYear'], inplace=True)
-    basics_df = basics_df[basics_df['startYear'] >= YEAR_FILTER_THRESHOLD].copy()
-    # Convert the year to integer for cleaner data
-    basics_df['startYear'] = basics_df['startYear'].astype(int)
-    print(f"Filtered down to {len(basics_df)} titles released since {YEAR_FILTER_THRESHOLD}.")
-    # --- END NEW STEP ---
-
-    titles_df = basics_df[basics_df['titleType'].isin(['movie', 'tvSeries'])].copy()
+    # --- Step 2: Process basics file in chunks to build our core DataFrame ---
+    print("Step 2/6: Processing titles in chunks...")
+    filtered_chunks = []
+    with pd.read_csv(BASICS_URL, sep='\t', usecols=['tconst', 'titleType', 'primaryTitle', 'genres', 'startYear'], chunksize=CHUNK_SIZE, compression='gzip') as reader:
+        for chunk in reader:
+            chunk.dropna(subset=['startYear'], inplace=True)
+            chunk['startYear'] = pd.to_numeric(chunk['startYear'], errors='coerce')
+            chunk = chunk[
+                (chunk['startYear'] >= YEAR_FILTER_THRESHOLD) &
+                (chunk['titleType'].isin(['movie', 'tvSeries']))
+            ]
+            if not chunk.empty:
+                filtered_chunks.append(chunk)
     
-    indian_akas = akas_df[akas_df['region'] == 'IN']
-    indian_ids = set(indian_akas['titleId'].unique())
+    titles_df = pd.concat(filtered_chunks, ignore_index=True)
+    print(f"Processed and filtered down to {len(titles_df)} titles since {YEAR_FILTER_THRESHOLD}.")
+
+    # --- Step 3: Load ratings and enrich the DataFrame ---
+    print("Step 3/6: Enriching data with ratings and classifications...")
+    ratings_df = pd.read_csv(RATINGS_URL, sep='\t')
+    
     titles_df['is_indian'] = titles_df['tconst'].isin(indian_ids)
-    
     enriched_df = pd.merge(titles_df, ratings_df, on='tconst', how='left')
     
     enriched_df['genres'] = enriched_df['genres'].replace('\\N', '')
@@ -67,15 +63,15 @@ def build_artifacts():
     qualified_df['metadata_soup'] = (qualified_df['primaryTitle'] + ' ' + qualified_df['genres'].str.replace(',', ' ')).fillna('')
     print(f"Data transformed. Total qualified titles for ML model: {len(qualified_df)}")
 
-    # --- MACHINE LEARNING ---
-    print("Step 3/5: Computing TF-IDF and Cosine Similarity Matrix...")
+    # --- Step 4: Machine Learning ---
+    print("Step 4/6: Computing TF-IDF and Cosine Similarity Matrix...")
     tfidf = TfidfVectorizer(stop_words='english')
     tfidf_matrix = tfidf.fit_transform(qualified_df['metadata_soup'])
     cosine_sim = cosine_similarity(tfidf_matrix, tfidf_matrix)
     print("ML matrix computed.")
 
-    # --- PERSIST ARTIFACTS ---
-    print("Step 4/5: Saving computed artifacts to disk...")
+    # --- Step 5: Persist Artifacts ---
+    print("Step 5/6: Saving computed artifacts to disk...")
     qualified_df.reset_index(drop=True, inplace=True)
     
     with open(os.path.join(ARTIFACTS_DIR, 'cosine_sim.pkl'), 'wb') as f:
