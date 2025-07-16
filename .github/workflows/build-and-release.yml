@@ -10,8 +10,13 @@ on:
 jobs:
   build-and-release-artifacts:
     name: Build and Release Data Artifacts
-    # Runs on the standard, free runner
     runs-on: ubuntu-latest
+
+    # --- THIS IS THE FIX ---
+    # We must explicitly grant the GITHUB_TOKEN the permissions
+    # required to create a release.
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -44,6 +49,7 @@ jobs:
   build-docker-image:
     name: Build and Push Lean Docker Image
     runs-on: ubuntu-latest
+    # This job doesn't need write permissions, so we don't add them here.
     
     steps:
       - name: Checkout repository
