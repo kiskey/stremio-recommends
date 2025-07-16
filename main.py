@@ -27,24 +27,14 @@ indices = None
 # --- Addon Manifest (with Pagination) ---
 MANIFEST = {
     "id": "community.dynamic.recommendations",
-    "version": "3.1.2", # Patch version for pagination fix
+    "version": "3.2.0", # Version bump for new recommendation architecture
     "name": "For You Recommendations",
-    "description": "Provides configurable, paginated, and region-sorted recommendations.",
+    "description": "Provides robust, independent, and configurable recommendations.",
     "types": ["movie", "series"],
     "resources": ["catalog", "meta"],
     "catalogs": [
-        {
-            "type": "movie",
-            "id": "recs_movies",
-            "name": "Recommended Movies",
-            "extra": [{"name": "skip", "isRequired": False}]
-        },
-        {
-            "type": "series",
-            "id": "recs_series",
-            "name": "Recommended Series",
-            "extra": [{"name": "skip", "isRequired": False}]
-        }
+        {"type": "movie", "id": "recs_movies", "name": "Recommended Movies", "extra": [{"name": "skip", "isRequired": False}]},
+        {"type": "series", "id": "recs_series", "name": "Recommended Series", "extra": [{"name": "skip", "isRequired": False}]}
     ]
 }
 
@@ -85,7 +75,8 @@ def get_series_recommendations(skip: int = 0):
 
 def generate_sorted_recommendations(media_type: str, skip: int = 0):
     """
-    Generates a pool of recommendations, then filters, sorts, and paginates them.
+    Generates a dedicated pool of recommendations for a specific media type,
+    then sorts and paginates them.
     """
     conn = sqlite3.connect(HISTORY_DB_PATH)
     query = "SELECT imdb_id FROM history WHERE type = ? ORDER BY timestamp DESC LIMIT ?"
@@ -95,50 +86,63 @@ def generate_sorted_recommendations(media_type: str, skip: int = 0):
         conn.close()
         return jsonify({"metas": []})
 
-    candidate_scores = {}
     full_history_ids = set(pd.read_sql_query("SELECT imdb_id FROM history", conn)['imdb_id'])
     conn.close()
 
+    # --- NEW: Independent Candidate Generation Loop ---
+    # This loop ensures we gather enough candidates OF THE CORRECT TYPE.
+    candidate_ids = set()
+    candidate_pool_target_size = TOTAL_LIMIT + len(history_df) # Aim for a slightly larger pool
+
     for imdb_id in history_df['imdb_id']:
+        if len(candidate_ids) >= candidate_pool_target_size:
+            break # Stop if we have enough candidates
+
         if imdb_id in indices:
             idx = indices[imdb_id]
             sim_scores = cosine_similarity(tfidf_matrix[idx], tfidf_matrix).flatten()
-            related_indices = sim_scores.argsort()[-31:-1][::-1]
-            for rel_idx in related_indices:
-                if rel_idx not in candidate_scores:
-                    candidate_scores[rel_idx] = sim_scores[rel_idx]
+            
+            # Iterate through the full sorted list of similar items
+            for related_idx in sim_scores.argsort()[::-1]:
+                # Stop processing this seed if we have enough candidates
+                if len(candidate_ids) >= candidate_pool_target_size:
+                    break
+
+                # Get details of the potential recommendation
+                rec_details = all_titles.iloc[related_idx]
+                rec_id = rec_details['tconst']
+                rec_type = rec_details['titleType']
+
+                # Filter *before* adding to the pool to ensure relevance
+                if rec_type == media_type and rec_id not in full_history_ids and rec_id not in candidate_ids:
+                    candidate_ids.add(rec_id)
     
-    candidate_details = all_titles.iloc[list(candidate_scores.keys())].copy()
-    candidate_details['score'] = candidate_details.index.map(candidate_scores)
+    if not candidate_ids:
+        return jsonify({"metas": []})
 
-    filtered_candidates = candidate_details[~candidate_details['tconst'].isin(full_history_ids)]
-    typed_candidates = filtered_candidates[filtered_candidates['titleType'] == media_type]
-
+    # Now we have a clean pool of candidates of the correct type
+    candidate_details = all_titles[all_titles['tconst'].isin(list(candidate_ids))].copy()
+    
     # Region-based sorting logic
     sorted_groups, processed_regions = [], set()
     for region in PRIORITY_REGIONS:
-        region_recs = typed_candidates[typed_candidates['primary_region'] == region]
-        sorted_groups.append(region_recs.sort_values(by=['score', 'averageRating'], ascending=False))
+        region_recs = candidate_details[candidate_details['primary_region'] == region]
+        sorted_groups.append(region_recs.sort_values(by=['averageRating'], ascending=False)) # Sort by rating
         processed_regions.add(region)
-    other_recs = typed_candidates[~typed_candidates['primary_region'].isin(processed_regions)]
-    sorted_groups.append(other_recs.sort_values(by=['score', 'averageRating'], ascending=False))
+    other_recs = candidate_details[~candidate_details['primary_region'].isin(processed_regions)]
+    sorted_groups.append(other_recs.sort_values(by=['averageRating'], ascending=False))
 
-    if not sorted_groups:
-        return jsonify({"metas": []})
-        
     full_sorted_df = pd.concat(sorted_groups)
-
-    # Apply total limit first
-    total_limited_df = full_sorted_df.head(TOTAL_LIMIT)
     
-    # Then, apply pagination to that limited list
+    # Apply total limit and pagination
+    total_limited_df = full_sorted_df.head(TOTAL_LIMIT)
     paginated_df = total_limited_df.iloc[skip : skip + PAGE_SIZE]
 
-    # --- PAGINATION FIX: Calculate if there are more items to show ---
+    # Calculate 'hasMore' correctly
     num_total_results = len(total_limited_df)
     has_more = (skip + PAGE_SIZE) < num_total_results
 
-    # Format the metas for the current page
+    # Format for Stremio response
     metas = []
     for _, row in paginated_df.iterrows():
         poster_url = f"https://images.metahub.space/poster/medium/{row['tconst']}/img"
@@ -151,7 +155,6 @@ def generate_sorted_recommendations(media_type: str, skip: int = 0):
             "posterShape": "poster"
         })
 
-    # Return the final response object, including the crucial 'hasMore' key
     return jsonify({"metas": metas, "hasMore": has_more})
 
 # --- Helper functions ---
