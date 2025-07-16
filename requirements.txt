@@ -1,12 +1,19 @@
 # requirements.txt
 
 # Pinning core ML and Data libraries to prevent binary incompatibility.
-# These versions are known to work well together.
 numpy==1.24.4
 pandas==1.5.3
 scikit-learn==1.2.2
 SQLAlchemy==2.0.7
 
-# Application server
+# Pinning Flask and its direct dependencies to prevent API incompatibilities.
+# Werkzeug < 3.0 is required for Flask 2.2.x.
 Flask==2.2.3
+Werkzeug==2.3.7
+Jinja2==3.1.2
+itsdangerous==2.1.2
+click==8.1.3
+MarkupSafe==2.1.2
+
+# Application server
 gunicorn==20.1.0
