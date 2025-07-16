@@ -1,3 +1,5 @@
+# .dockerignore
+
 __pycache__/
 *.pyc
 .Python
@@ -5,7 +7,4 @@ env/
 venv/
 .git
 .idea/
-artifacts/
-*.db
-*.pkl
 *.tar.gz
