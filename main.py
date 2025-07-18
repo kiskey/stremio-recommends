@@ -13,7 +13,6 @@ PAGE_SIZE = int(os.environ.get('PAGE_SIZE', 50))
 PRIORITY_REGIONS = os.environ.get('PRIORITY_REGIONS', 'IN').split(',')
 HISTORY_SEED_COUNT = int(os.environ.get('HISTORY_SEED_COUNT', 5))
 TOTAL_LIMIT = int(os.environ.get('TOTAL_LIMIT', 50))
-# NEW: Add a configurable minimum rating
 MINIMUM_RATING = float(os.environ.get('MINIMUM_RATING', 4.9))
 ARTIFACTS_DIR = os.environ.get('ARTIFACTS_DIR', 'artifacts')
 HISTORY_DB_PATH = os.environ.get('HISTORY_DB_PATH', '/usr/src/app/persistent_data/watch_history.db')
@@ -29,7 +28,7 @@ indices = None
 # --- Addon Manifest ---
 MANIFEST = {
     "id": "community.dynamic.recommendations",
-    "version": "4.2.0", # Version bump for new rating filter feature
+    "version": "4.2.1", # Patch version for new conditional rating logic
     "name": "For You Recommendations (Trakt Synced)",
     "description": "Uses your Trakt.tv watch history to provide accurate recommendations.",
     "types": ["movie", "series"],
@@ -73,7 +72,7 @@ def generate_sorted_recommendations(media_type: str, skip: int = 0):
 
     # Independent Candidate Generation Loop
     candidate_ids = set()
-    candidate_pool_target_size = TOTAL_LIMIT + len(history_df) + 50 # Aim for a larger pool to account for filtering
+    candidate_pool_target_size = TOTAL_LIMIT + len(history_df) + 100 # Aim for a larger pool to account for filtering
     for imdb_id in history_df['imdb_id']:
         if len(candidate_ids) >= candidate_pool_target_size: break
         if imdb_id in indices:
@@ -90,11 +89,29 @@ def generate_sorted_recommendations(media_type: str, skip: int = 0):
 
     candidate_details = all_titles[all_titles['tconst'].isin(list(candidate_ids))].copy()
     
-    # --- NEW: Apply the minimum rating filter ---
-    # This filter is applied early to ensure our pool consists of quality items.
-    rated_candidates = candidate_details[candidate_details['averageRating'] >= MINIMUM_RATING]
+    # --- NEW: Conditional Rating Filter Logic ---
+    
+    # 1. Separate candidates by the primary Indian region ('IN')
+    # Note: Assumes 'IN' is the primary region for this special logic.
+    indian_candidates = candidate_details[candidate_details['primary_region'] == 'IN']
+    non_indian_candidates = candidate_details[candidate_details['primary_region'] != 'IN']
+    
+    # 2. Apply the lenient filter to Indian content:
+    # Keep if rating is high enough OR if rating is not available (0.0).
+    filtered_indian = indian_candidates[
+        (indian_candidates['averageRating'] >= MINIMUM_RATING) |
+        (indian_candidates['averageRating'] == 0.0)
+    ]
+    
+    # 3. Apply the strict filter to all other (non-Indian) content.
+    filtered_non_indian = non_indian_candidates[non_indian_candidates['averageRating'] >= MINIMUM_RATING]
+    
+    # 4. Combine the filtered groups back into a single DataFrame.
+    rated_candidates = pd.concat([filtered_indian, filtered_non_indian])
+    
+    # --- End of New Logic ---
 
-    # Region-based sorting logic
+    # Region-based sorting logic now works on the intelligently filtered pool
     sorted_groups, processed_regions = [], set()
     for region in PRIORITY_REGIONS:
         region_recs = rated_candidates[rated_candidates['primary_region'] == region]
