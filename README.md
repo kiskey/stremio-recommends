@@ -37,6 +37,11 @@ You can customize the addon's behavior by setting environment variables in your 
     -   *Example*: `75`
     -   *Default*: `50`
 
+-   **` Trakt Worker Config`**:
+      - TRAKT_USERNAME=your_trakt_username_here
+      - TRAKT_CLIENT_ID=your_trakt_client_id_here
+      - TRAKT_CLIENT_SECRET=your_trakt_client_secret_here
+      - TRAKT_SYNC_INTERVAL_MINUTES=60
 ## Deployment Guide
 
 This guide will walk you through deploying your own instance of the addon.
