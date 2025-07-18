@@ -42,6 +42,10 @@ You can customize the addon's behavior by setting environment variables in your 
       - TRAKT_CLIENT_ID=your_trakt_client_id_here
       - TRAKT_CLIENT_SECRET=your_trakt_client_secret_here
       - TRAKT_SYNC_INTERVAL_MINUTES=60
+ 
+-   **`MINIMUM_RATING`**: The minimum IMDb rating (from 0.0 to 10.0) for an item to be included in recommendations.
+    -   *Example*: `6.5`
+    -   *Default*: `4.9`
 ## Deployment Guide
 
 This guide will walk you through deploying your own instance of the addon.
