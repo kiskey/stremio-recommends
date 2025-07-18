@@ -9,23 +9,20 @@ WORKDIR /usr/src/app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the data artifacts into the image
+# Copy all scripts and data into the image
 COPY artifacts ./artifacts
-
-# Copy the application code
 COPY main.py .
-
-# --- NEW ENTRYPOINT LOGIC ---
-# Copy the entrypoint script into the container
+COPY trakt_sync.py .
 COPY entrypoint.sh .
-# Make the script executable
+
+# Make the entrypoint script executable
 RUN chmod +x ./entrypoint.sh
 
+# Set environment variables that both scripts use
 ENV ARTIFACTS_DIR=/usr/src/app/artifacts
+ENV HISTORY_DB_PATH=/usr/src/app/persistent_data/watch_history.db
+
 EXPOSE 5000
 
-# Set the entrypoint script to run on container start
+# Set our new script as the entrypoint for the container
 ENTRYPOINT ["./entrypoint.sh"]
-
-# The CMD is now passed as an argument to the entrypoint script
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "main:create_app()"]
