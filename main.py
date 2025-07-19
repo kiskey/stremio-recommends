@@ -28,11 +28,11 @@ indices = None
 # --- Addon Manifest ---
 MANIFEST = {
     "id": "community.dynamic.recommendations",
-    "version": "4.2.1", # Patch version for new conditional rating logic
+    "version": "4.2.2", # Final stable version
     "name": "For You Recommendations (Trakt Synced)",
     "description": "Uses your Trakt.tv watch history to provide accurate recommendations.",
     "types": ["movie", "series"],
-    "resources": ["catalog"],
+    "resources": ["catalog"], # We only provide catalogs, not metadata
     "catalogs": [
         {"type": "movie", "id": "recs_movies", "name": "Recommended Movies", "extra": [{"name": "skip", "isRequired": False}]},
         {"type": "series", "id": "recs_series", "name": "Recommended Series", "extra": [{"name": "skip", "isRequired": False}]}
@@ -42,21 +42,28 @@ MANIFEST = {
 # --- Route Definitions ---
 @main_bp.route('/manifest.json')
 def manifest():
+    """Provides the addon's manifest to Stremio."""
     return jsonify(MANIFEST)
 
 # --- Catalog Routes with Pagination ---
 @main_bp.route('/catalog/movie/recs_movies.json')
 @main_bp.route('/catalog/movie/recs_movies/skip=<int:skip>.json')
 def get_movie_recommendations(skip: int = 0):
+    """Endpoint for the 'Recommended Movies' catalog."""
     return generate_sorted_recommendations(media_type='movie', skip=skip)
 
 @main_bp.route('/catalog/series/recs_series.json')
 @main_bp.route('/catalog/series/recs_series/skip=<int:skip>.json')
 def get_series_recommendations(skip: int = 0):
+    """Endpoint for the 'Recommended Series' catalog."""
     return generate_sorted_recommendations(media_type='tvSeries', skip=skip)
 
 # --- CORE LOGIC HELPER FUNCTION ---
 def generate_sorted_recommendations(media_type: str, skip: int = 0):
+    """
+    Generates a dedicated pool of recommendations for a specific media type,
+    then filters, sorts, and paginates them.
+    """
     try:
         conn = sqlite3.connect(HISTORY_DB_PATH)
         query = "SELECT imdb_id FROM history WHERE type = ? ORDER BY timestamp DESC LIMIT ?"
@@ -72,7 +79,8 @@ def generate_sorted_recommendations(media_type: str, skip: int = 0):
 
     # Independent Candidate Generation Loop
     candidate_ids = set()
-    candidate_pool_target_size = TOTAL_LIMIT + len(history_df) + 100 # Aim for a larger pool to account for filtering
+    # Aim for a slightly larger pool to account for subsequent filtering
+    candidate_pool_target_size = TOTAL_LIMIT + len(history_df) + 100 
     for imdb_id in history_df['imdb_id']:
         if len(candidate_ids) >= candidate_pool_target_size: break
         if imdb_id in indices:
@@ -81,37 +89,34 @@ def generate_sorted_recommendations(media_type: str, skip: int = 0):
             for related_idx in sim_scores.argsort()[::-1]:
                 if len(candidate_ids) >= candidate_pool_target_size: break
                 rec_details = all_titles.iloc[related_idx]
-                rec_id, rec_type = rec_details['tconst'], rec_details['titleType']
-                if rec_type == media_type and rec_id not in full_history_ids and rec_id not in candidate_ids:
+                rec_id = rec_details['tconst']
+                # Generate a mixed pool first, we will filter by type later
+                if rec_id not in full_history_ids and rec_id not in candidate_ids:
                     candidate_ids.add(rec_id)
     
     if not candidate_ids: return jsonify({"metas": []})
 
     candidate_details = all_titles[all_titles['tconst'].isin(list(candidate_ids))].copy()
     
-    # --- NEW: Conditional Rating Filter Logic ---
+    # --- Corrected Logic Flow ---
+    # 1. First, filter for the correct media type (movie or tvSeries).
+    typed_candidates = candidate_details[candidate_details['titleType'] == media_type]
+
+    # 2. Now, apply the conditional rating filter to this clean, type-specific pool.
+    indian_candidates = typed_candidates[typed_candidates['primary_region'] == 'IN']
+    non_indian_candidates = typed_candidates[typed_candidates['primary_region'] != 'IN']
     
-    # 1. Separate candidates by the primary Indian region ('IN')
-    # Note: Assumes 'IN' is the primary region for this special logic.
-    indian_candidates = candidate_details[candidate_details['primary_region'] == 'IN']
-    non_indian_candidates = candidate_details[candidate_details['primary_region'] != 'IN']
-    
-    # 2. Apply the lenient filter to Indian content:
-    # Keep if rating is high enough OR if rating is not available (0.0).
+    # Keep Indian content if rating is high enough OR if rating is not available (0.0).
     filtered_indian = indian_candidates[
         (indian_candidates['averageRating'] >= MINIMUM_RATING) |
         (indian_candidates['averageRating'] == 0.0)
     ]
-    
-    # 3. Apply the strict filter to all other (non-Indian) content.
+    # Apply the strict filter to all other content.
     filtered_non_indian = non_indian_candidates[non_indian_candidates['averageRating'] >= MINIMUM_RATING]
     
-    # 4. Combine the filtered groups back into a single DataFrame.
     rated_candidates = pd.concat([filtered_indian, filtered_non_indian])
     
-    # --- End of New Logic ---
-
-    # Region-based sorting logic now works on the intelligently filtered pool
+    # Region-based sorting logic
     sorted_groups, processed_regions = [], set()
     for region in PRIORITY_REGIONS:
         region_recs = rated_candidates[rated_candidates['primary_region'] == region]
@@ -126,7 +131,7 @@ def generate_sorted_recommendations(media_type: str, skip: int = 0):
     total_limited_df = full_sorted_df.head(TOTAL_LIMIT)
     paginated_df = total_limited_df.iloc[skip : skip + PAGE_SIZE]
 
-    # Calculate 'hasMore' correctly
+    # Calculate 'hasMore' correctly for pagination
     num_total_results = len(total_limited_df)
     has_more = (skip + PAGE_SIZE) < num_total_results
 
@@ -148,6 +153,7 @@ def create_app():
     app = Flask(__name__)
     global tfidf_matrix, all_titles, indices
     
+    # Pre-flight check is now handled by the entrypoint.sh script.
     print("[main.py] Loading bundled artifacts...")
     try:
         with open(os.path.join(ARTIFACTS_DIR, 'tfidf_matrix.pkl'), 'rb') as f:
